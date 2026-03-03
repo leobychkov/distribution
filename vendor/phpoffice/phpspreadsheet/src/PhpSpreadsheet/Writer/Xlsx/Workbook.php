@@ -2,24 +2,24 @@
 
 namespace PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 
-use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
-use PhpOffice\PhpSpreadsheet\NamedRange;
+use PhpOffice\PhpSpreadsheet\Reader\Xlsx\Namespaces;
 use PhpOffice\PhpSpreadsheet\Shared\Date;
 use PhpOffice\PhpSpreadsheet\Shared\XMLWriter;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
-use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
 use PhpOffice\PhpSpreadsheet\Writer\Exception as WriterException;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx\DefinedNames as DefinedNamesWriter;
 
 class Workbook extends WriterPart
 {
     /**
      * Write workbook to XML format.
      *
-     * @param bool $recalcRequired Indicate whether formulas should be recalculated before writing
+     * @param bool $preCalculateFormulas If true, formulas will be calculated before writing
+     * @param ?bool $forceFullCalc If null, !$preCalculateFormulas
      *
      * @return string XML Output
      */
-    public function writeWorkbook(Spreadsheet $spreadsheet, $recalcRequired = false)
+    public function writeWorkbook(Spreadsheet $spreadsheet, bool $preCalculateFormulas = false, ?bool $forceFullCalc = null): string
     {
         // Create XML writer
         if ($this->getParentWriter()->getUseDiskCaching()) {
@@ -33,15 +33,14 @@ class Workbook extends WriterPart
 
         // workbook
         $objWriter->startElement('workbook');
-        $objWriter->writeAttribute('xml:space', 'preserve');
-        $objWriter->writeAttribute('xmlns', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main');
-        $objWriter->writeAttribute('xmlns:r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
+        $objWriter->writeAttribute('xmlns', Namespaces::MAIN);
+        $objWriter->writeAttribute('xmlns:r', Namespaces::SCHEMA_OFFICE_DOCUMENT);
 
         // fileVersion
         $this->writeFileVersion($objWriter);
 
         // workbookPr
-        $this->writeWorkbookPr($objWriter);
+        $this->writeWorkbookPr($objWriter, $spreadsheet);
 
         // workbookProtection
         $this->writeWorkbookProtection($objWriter, $spreadsheet);
@@ -55,10 +54,10 @@ class Workbook extends WriterPart
         $this->writeSheets($objWriter, $spreadsheet);
 
         // definedNames
-        $this->writeDefinedNames($objWriter, $spreadsheet);
+        (new DefinedNamesWriter($objWriter, $spreadsheet))->write();
 
         // calcPr
-        $this->writeCalcPr($objWriter, $recalcRequired);
+        $this->writeCalcPr($objWriter, $preCalculateFormulas, $forceFullCalc);
 
         $objWriter->endElement();
 
@@ -68,8 +67,6 @@ class Workbook extends WriterPart
 
     /**
      * Write file version.
-     *
-     * @param XMLWriter $objWriter XML Writer
      */
     private function writeFileVersion(XMLWriter $objWriter): void
     {
@@ -83,14 +80,12 @@ class Workbook extends WriterPart
 
     /**
      * Write WorkbookPr.
-     *
-     * @param XMLWriter $objWriter XML Writer
      */
-    private function writeWorkbookPr(XMLWriter $objWriter): void
+    private function writeWorkbookPr(XMLWriter $objWriter, Spreadsheet $spreadsheet): void
     {
         $objWriter->startElement('workbookPr');
 
-        if (Date::getExcelCalendar() === Date::CALENDAR_MAC_1904) {
+        if ($spreadsheet->getExcelCalendar() === Date::CALENDAR_MAC_1904) {
             $objWriter->writeAttribute('date1904', '1');
         }
 
@@ -101,8 +96,6 @@ class Workbook extends WriterPart
 
     /**
      * Write BookViews.
-     *
-     * @param XMLWriter $objWriter XML Writer
      */
     private function writeBookViews(XMLWriter $objWriter, Spreadsheet $spreadsheet): void
     {
@@ -112,14 +105,14 @@ class Workbook extends WriterPart
         // workbookView
         $objWriter->startElement('workbookView');
 
-        $objWriter->writeAttribute('activeTab', $spreadsheet->getActiveSheetIndex());
+        $objWriter->writeAttribute('activeTab', (string) $spreadsheet->getActiveSheetIndex());
         $objWriter->writeAttribute('autoFilterDateGrouping', ($spreadsheet->getAutoFilterDateGrouping() ? 'true' : 'false'));
-        $objWriter->writeAttribute('firstSheet', $spreadsheet->getFirstSheetIndex());
+        $objWriter->writeAttribute('firstSheet', (string) $spreadsheet->getFirstSheetIndex());
         $objWriter->writeAttribute('minimized', ($spreadsheet->getMinimized() ? 'true' : 'false'));
         $objWriter->writeAttribute('showHorizontalScroll', ($spreadsheet->getShowHorizontalScroll() ? 'true' : 'false'));
         $objWriter->writeAttribute('showSheetTabs', ($spreadsheet->getShowSheetTabs() ? 'true' : 'false'));
         $objWriter->writeAttribute('showVerticalScroll', ($spreadsheet->getShowVerticalScroll() ? 'true' : 'false'));
-        $objWriter->writeAttribute('tabRatio', $spreadsheet->getTabRatio());
+        $objWriter->writeAttribute('tabRatio', (string) $spreadsheet->getTabRatio());
         $objWriter->writeAttribute('visibility', $spreadsheet->getVisibility());
 
         $objWriter->endElement();
@@ -129,23 +122,38 @@ class Workbook extends WriterPart
 
     /**
      * Write WorkbookProtection.
-     *
-     * @param XMLWriter $objWriter XML Writer
      */
     private function writeWorkbookProtection(XMLWriter $objWriter, Spreadsheet $spreadsheet): void
     {
-        if ($spreadsheet->getSecurity()->isSecurityEnabled()) {
+        $security = $spreadsheet->getSecurity();
+        if ($security->isSecurityEnabled()) {
             $objWriter->startElement('workbookProtection');
-            $objWriter->writeAttribute('lockRevision', ($spreadsheet->getSecurity()->getLockRevision() ? 'true' : 'false'));
-            $objWriter->writeAttribute('lockStructure', ($spreadsheet->getSecurity()->getLockStructure() ? 'true' : 'false'));
-            $objWriter->writeAttribute('lockWindows', ($spreadsheet->getSecurity()->getLockWindows() ? 'true' : 'false'));
+            $objWriter->writeAttribute('lockRevision', ($security->getLockRevision() ? 'true' : 'false'));
+            $objWriter->writeAttribute('lockStructure', ($security->getLockStructure() ? 'true' : 'false'));
+            $objWriter->writeAttribute('lockWindows', ($security->getLockWindows() ? 'true' : 'false'));
 
-            if ($spreadsheet->getSecurity()->getRevisionsPassword() != '') {
-                $objWriter->writeAttribute('revisionsPassword', $spreadsheet->getSecurity()->getRevisionsPassword());
+            if ($security->getRevisionsPassword() !== '') {
+                $objWriter->writeAttribute('revisionsPassword', $security->getRevisionsPassword());
+            } else {
+                $hashValue = $security->getRevisionsHashValue();
+                if ($hashValue !== '') {
+                    $objWriter->writeAttribute('revisionsAlgorithmName', $security->getRevisionsAlgorithmName());
+                    $objWriter->writeAttribute('revisionsHashValue', $hashValue);
+                    $objWriter->writeAttribute('revisionsSaltValue', $security->getRevisionsSaltValue());
+                    $objWriter->writeAttribute('revisionsSpinCount', (string) $security->getRevisionsSpinCount());
+                }
             }
 
-            if ($spreadsheet->getSecurity()->getWorkbookPassword() != '') {
-                $objWriter->writeAttribute('workbookPassword', $spreadsheet->getSecurity()->getWorkbookPassword());
+            if ($security->getWorkbookPassword() !== '') {
+                $objWriter->writeAttribute('workbookPassword', $security->getWorkbookPassword());
+            } else {
+                $hashValue = $security->getWorkbookHashValue();
+                if ($hashValue !== '') {
+                    $objWriter->writeAttribute('workbookAlgorithmName', $security->getWorkbookAlgorithmName());
+                    $objWriter->writeAttribute('workbookHashValue', $hashValue);
+                    $objWriter->writeAttribute('workbookSaltValue', $security->getWorkbookSaltValue());
+                    $objWriter->writeAttribute('workbookSpinCount', (string) $security->getWorkbookSpinCount());
+                }
             }
 
             $objWriter->endElement();
@@ -155,10 +163,9 @@ class Workbook extends WriterPart
     /**
      * Write calcPr.
      *
-     * @param XMLWriter $objWriter XML Writer
-     * @param bool $recalcRequired Indicate whether formulas should be recalculated before writing
+     * @param bool $preCalculateFormulas If true, formulas will be calculated before writing
      */
-    private function writeCalcPr(XMLWriter $objWriter, $recalcRequired = true): void
+    private function writeCalcPr(XMLWriter $objWriter, bool $preCalculateFormulas, ?bool $forceFullCalc): void
     {
         $objWriter->startElement('calcPr');
 
@@ -167,18 +174,20 @@ class Workbook extends WriterPart
         //     because the file has changed
         $objWriter->writeAttribute('calcId', '999999');
         $objWriter->writeAttribute('calcMode', 'auto');
-        //    fullCalcOnLoad isn't needed if we've recalculating for the save
-        $objWriter->writeAttribute('calcCompleted', ($recalcRequired) ? 1 : 0);
-        $objWriter->writeAttribute('fullCalcOnLoad', ($recalcRequired) ? 0 : 1);
-        $objWriter->writeAttribute('forceFullCalc', ($recalcRequired) ? 0 : 1);
+        //    fullCalcOnLoad isn't needed if we will calculate before writing
+        $objWriter->writeAttribute('calcCompleted', ($preCalculateFormulas) ? '1' : '0');
+        $objWriter->writeAttribute('fullCalcOnLoad', ($preCalculateFormulas) ? '0' : '1');
+        if ($forceFullCalc === null) {
+            $objWriter->writeAttribute('forceFullCalc', $preCalculateFormulas ? '0' : '1');
+        } else {
+            $objWriter->writeAttribute('forceFullCalc', $forceFullCalc ? '1' : '0');
+        }
 
         $objWriter->endElement();
     }
 
     /**
      * Write sheets.
-     *
-     * @param XMLWriter $objWriter XML Writer
      */
     private function writeSheets(XMLWriter $objWriter, Spreadsheet $spreadsheet): void
     {
@@ -202,205 +211,25 @@ class Workbook extends WriterPart
     /**
      * Write sheet.
      *
-     * @param XMLWriter $objWriter XML Writer
-     * @param string $pSheetname Sheet name
-     * @param int $pSheetId Sheet id
-     * @param int $pRelId Relationship ID
+     * @param string $worksheetName Sheet name
+     * @param int $worksheetId Sheet id
+     * @param int $relId Relationship ID
      * @param string $sheetState Sheet state (visible, hidden, veryHidden)
      */
-    private function writeSheet(XMLWriter $objWriter, $pSheetname, $pSheetId = 1, $pRelId = 1, $sheetState = 'visible'): void
+    private function writeSheet(XMLWriter $objWriter, string $worksheetName, int $worksheetId = 1, int $relId = 1, string $sheetState = 'visible'): void
     {
-        if ($pSheetname != '') {
+        if ($worksheetName != '') {
             // Write sheet
             $objWriter->startElement('sheet');
-            $objWriter->writeAttribute('name', $pSheetname);
-            $objWriter->writeAttribute('sheetId', $pSheetId);
+            $objWriter->writeAttribute('name', $worksheetName);
+            $objWriter->writeAttribute('sheetId', (string) $worksheetId);
             if ($sheetState !== 'visible' && $sheetState != '') {
                 $objWriter->writeAttribute('state', $sheetState);
             }
-            $objWriter->writeAttribute('r:id', 'rId' . $pRelId);
+            $objWriter->writeAttribute('r:id', 'rId' . $relId);
             $objWriter->endElement();
         } else {
             throw new WriterException('Invalid parameters passed.');
-        }
-    }
-
-    /**
-     * Write Defined Names.
-     *
-     * @param XMLWriter $objWriter XML Writer
-     */
-    private function writeDefinedNames(XMLWriter $objWriter, Spreadsheet $spreadsheet): void
-    {
-        // Write defined names
-        $objWriter->startElement('definedNames');
-
-        // Named ranges
-        if (count($spreadsheet->getNamedRanges()) > 0) {
-            // Named ranges
-            $this->writeNamedRanges($objWriter, $spreadsheet);
-        }
-
-        // Other defined names
-        $sheetCount = $spreadsheet->getSheetCount();
-        for ($i = 0; $i < $sheetCount; ++$i) {
-            // definedName for autoFilter
-            $this->writeDefinedNameForAutofilter($objWriter, $spreadsheet->getSheet($i), $i);
-
-            // definedName for Print_Titles
-            $this->writeDefinedNameForPrintTitles($objWriter, $spreadsheet->getSheet($i), $i);
-
-            // definedName for Print_Area
-            $this->writeDefinedNameForPrintArea($objWriter, $spreadsheet->getSheet($i), $i);
-        }
-
-        $objWriter->endElement();
-    }
-
-    /**
-     * Write named ranges.
-     *
-     * @param XMLWriter $objWriter XML Writer
-     */
-    private function writeNamedRanges(XMLWriter $objWriter, Spreadsheet $spreadsheet): void
-    {
-        // Loop named ranges
-        $namedRanges = $spreadsheet->getNamedRanges();
-        foreach ($namedRanges as $namedRange) {
-            $this->writeDefinedNameForNamedRange($objWriter, $namedRange);
-        }
-    }
-
-    /**
-     * Write Defined Name for named range.
-     *
-     * @param XMLWriter $objWriter XML Writer
-     */
-    private function writeDefinedNameForNamedRange(XMLWriter $objWriter, NamedRange $pNamedRange): void
-    {
-        // definedName for named range
-        $objWriter->startElement('definedName');
-        $objWriter->writeAttribute('name', $pNamedRange->getName());
-        if ($pNamedRange->getLocalOnly()) {
-            $objWriter->writeAttribute('localSheetId', $pNamedRange->getScope()->getParent()->getIndex($pNamedRange->getScope()));
-        }
-
-        // Create absolute coordinate and write as raw text
-        $range = Coordinate::splitRange($pNamedRange->getRange());
-        $iMax = count($range);
-        for ($i = 0; $i < $iMax; ++$i) {
-            $range[$i][0] = '\'' . str_replace("'", "''", $pNamedRange->getWorksheet()->getTitle()) . '\'!' . Coordinate::absoluteReference($range[$i][0]);
-            if (isset($range[$i][1])) {
-                $range[$i][1] = Coordinate::absoluteReference($range[$i][1]);
-            }
-        }
-        $range = Coordinate::buildRange($range);
-
-        $objWriter->writeRawData($range);
-
-        $objWriter->endElement();
-    }
-
-    /**
-     * Write Defined Name for autoFilter.
-     *
-     * @param XMLWriter $objWriter XML Writer
-     * @param int $pSheetId
-     */
-    private function writeDefinedNameForAutofilter(XMLWriter $objWriter, Worksheet $pSheet, $pSheetId = 0): void
-    {
-        // definedName for autoFilter
-        $autoFilterRange = $pSheet->getAutoFilter()->getRange();
-        if (!empty($autoFilterRange)) {
-            $objWriter->startElement('definedName');
-            $objWriter->writeAttribute('name', '_xlnm._FilterDatabase');
-            $objWriter->writeAttribute('localSheetId', $pSheetId);
-            $objWriter->writeAttribute('hidden', '1');
-
-            // Create absolute coordinate and write as raw text
-            $range = Coordinate::splitRange($autoFilterRange);
-            $range = $range[0];
-            //    Strip any worksheet ref so we can make the cell ref absolute
-            [$ws, $range[0]] = Worksheet::extractSheetTitle($range[0], true);
-
-            $range[0] = Coordinate::absoluteCoordinate($range[0]);
-            $range[1] = Coordinate::absoluteCoordinate($range[1]);
-            $range = implode(':', $range);
-
-            $objWriter->writeRawData('\'' . str_replace("'", "''", $pSheet->getTitle()) . '\'!' . $range);
-
-            $objWriter->endElement();
-        }
-    }
-
-    /**
-     * Write Defined Name for PrintTitles.
-     *
-     * @param XMLWriter $objWriter XML Writer
-     * @param int $pSheetId
-     */
-    private function writeDefinedNameForPrintTitles(XMLWriter $objWriter, Worksheet $pSheet, $pSheetId = 0): void
-    {
-        // definedName for PrintTitles
-        if ($pSheet->getPageSetup()->isColumnsToRepeatAtLeftSet() || $pSheet->getPageSetup()->isRowsToRepeatAtTopSet()) {
-            $objWriter->startElement('definedName');
-            $objWriter->writeAttribute('name', '_xlnm.Print_Titles');
-            $objWriter->writeAttribute('localSheetId', $pSheetId);
-
-            // Setting string
-            $settingString = '';
-
-            // Columns to repeat
-            if ($pSheet->getPageSetup()->isColumnsToRepeatAtLeftSet()) {
-                $repeat = $pSheet->getPageSetup()->getColumnsToRepeatAtLeft();
-
-                $settingString .= '\'' . str_replace("'", "''", $pSheet->getTitle()) . '\'!$' . $repeat[0] . ':$' . $repeat[1];
-            }
-
-            // Rows to repeat
-            if ($pSheet->getPageSetup()->isRowsToRepeatAtTopSet()) {
-                if ($pSheet->getPageSetup()->isColumnsToRepeatAtLeftSet()) {
-                    $settingString .= ',';
-                }
-
-                $repeat = $pSheet->getPageSetup()->getRowsToRepeatAtTop();
-
-                $settingString .= '\'' . str_replace("'", "''", $pSheet->getTitle()) . '\'!$' . $repeat[0] . ':$' . $repeat[1];
-            }
-
-            $objWriter->writeRawData($settingString);
-
-            $objWriter->endElement();
-        }
-    }
-
-    /**
-     * Write Defined Name for PrintTitles.
-     *
-     * @param XMLWriter $objWriter XML Writer
-     * @param int $pSheetId
-     */
-    private function writeDefinedNameForPrintArea(XMLWriter $objWriter, Worksheet $pSheet, $pSheetId = 0): void
-    {
-        // definedName for PrintArea
-        if ($pSheet->getPageSetup()->isPrintAreaSet()) {
-            $objWriter->startElement('definedName');
-            $objWriter->writeAttribute('name', '_xlnm.Print_Area');
-            $objWriter->writeAttribute('localSheetId', $pSheetId);
-
-            // Print area
-            $printArea = Coordinate::splitRange($pSheet->getPageSetup()->getPrintArea());
-
-            $chunks = [];
-            foreach ($printArea as $printAreaRect) {
-                $printAreaRect[0] = Coordinate::absoluteReference($printAreaRect[0]);
-                $printAreaRect[1] = Coordinate::absoluteReference($printAreaRect[1]);
-                $chunks[] = '\'' . str_replace("'", "''", $pSheet->getTitle()) . '\'!' . implode(':', $printAreaRect);
-            }
-
-            $objWriter->writeRawData(implode(',', $chunks));
-
-            $objWriter->endElement();
         }
     }
 }
